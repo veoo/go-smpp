@@ -22,6 +22,16 @@ import (
 // the maximum window size configured for the Transmitter or Transceiver.
 var ErrMaxWindowSize = errors.New("reached max window size")
 
+type ITransmitter interface {
+	ClientConn
+
+	Submit(sm *ShortMessage) (*ShortMessage, error)
+
+	SubmitLongMsg(sm *ShortMessage) (*ShortMessage, error)
+
+	QuerySM(src, msgid string) (*QueryResp, error)
+}
+
 // Transmitter implements an SMPP client transmitter.
 type Transmitter struct {
 	Addr        string
@@ -194,6 +204,14 @@ func (sm *ShortMessage) RespID() string {
 	return f.String()
 }
 
+func (sm *ShortMessage) SetResp(m sync.Mutex, p pdu.Body) {
+	r := struct {
+		sync.Mutex
+		p pdu.Body
+	}{m, p}
+	sm.resp = r
+}
+
 func (t *Transmitter) do(p pdu.Body) (*tx, error) {
 	t.conn.Lock()
 	notbound := t.conn.client == nil
@@ -203,7 +221,9 @@ func (t *Transmitter) do(p pdu.Body) (*tx, error) {
 	}
 	if t.conn.WindowSize > 0 {
 		inflight := uint(atomic.AddInt32(&t.tx.count, 1))
-		defer func(t *Transmitter) { atomic.AddInt32(&t.tx.count, -1) }(t)
+		defer func(t *Transmitter) {
+			atomic.AddInt32(&t.tx.count, -1)
+		}(t)
 		if inflight > t.conn.WindowSize {
 			return nil, ErrMaxWindowSize
 		}

@@ -14,6 +14,10 @@ import (
 	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
 )
 
+type ITransceiver interface {
+	ITransmitter
+}
+
 // Transceiver implements an SMPP transceiver.
 //
 // The API is a combination of the Transmitter and Receiver.
