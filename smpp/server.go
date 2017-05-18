@@ -45,9 +45,7 @@ type Server interface {
 	Session(id string) Session
 }
 
-// Server is an SMPP server for testing purposes. By default it authenticate
-// clients with the configured credentials, and echoes any other PDUs
-// back to the client.
+// Server is an SMPP server.
 type server struct {
 	User     string
 	Passwd   string
@@ -119,6 +117,21 @@ func NewUnstartedServer(user, password string, listener net.Listener) Server {
 	s := &server{
 		User:   user,
 		Passwd: password,
+		m:      map[pdu.ID]RequestHandlerFunc{},
+		a:      map[pdu.ID]AuthRequestHandlerFunc{},
+		s:      map[string]Session{},
+		l:      listener,
+	}
+	return s
+}
+
+// NewTLDUnstartedServer creates a new SSL Server with default settings, and
+// does not start it. Callers are supposed to call Start and Close later.
+func NewTLSUnstartedServer(user, password string, listener net.Listener, tlsConf *tls.Config) Server {
+	s := &server{
+		User:   user,
+		Passwd: password,
+		TLS:    tlsConf,
 		m:      map[pdu.ID]RequestHandlerFunc{},
 		a:      map[pdu.ID]AuthRequestHandlerFunc{},
 		s:      map[string]Session{},
