@@ -329,7 +329,7 @@ func (t *Transmitter) Submit(sm *ShortMessage) (*ShortMessage, error) {
 // SubmitLongMsg sends a long message (more than 140 bytes)
 // and returns and updates the given sm with the response status.
 // It returns the same sm object.
-func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) (*ShortMessage, error) {
+func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) ([]ShortMessage, error) {
 	maxLen := 134 // 140-6 (UDH)
 	rawMsg := sm.Text.Encode()
 	countParts := int((len(rawMsg)-1)/maxLen) + 1
@@ -341,6 +341,7 @@ func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) (*ShortMessage, error) {
 	UDHHeader[2] = 3
 	UDHHeader[3] = ri
 	UDHHeader[4] = uint8(countParts)
+	responses := []ShortMessage{}
 	for i := 0; i < countParts; i++ {
 		UDHHeader[5] = uint8(i + 1)
 		p := pdu.NewSubmitSM()
@@ -384,17 +385,10 @@ func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) (*ShortMessage, error) {
 		sm.resp.Lock()
 		sm.resp.p = resp.PDU
 		sm.resp.Unlock()
-		if id := resp.PDU.Header().ID; id != pdu.SubmitSMRespID {
-			return sm, fmt.Errorf("unexpected PDU ID: %s", id)
-		}
-		if s := resp.PDU.Header().Status; s != 0 {
-			return sm, s
-		}
-		if resp.Err != nil {
-			return sm, resp.Err
-		}
+		// checking for errors in the responses will be left to the client
+		responses = append(responses, *sm)
 	}
-	return sm, nil
+	return responses, nil
 }
 
 func (t *Transmitter) submitMsg(sm *ShortMessage, p pdu.Body, dataCoding uint8) (*ShortMessage, error) {
