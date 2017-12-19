@@ -368,6 +368,15 @@ func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) (*ShortMessage, error) {
 		f.Set(pdufield.ReplaceIfPresentFlag, sm.ReplaceIfPresentFlag)
 		f.Set(pdufield.SMDefaultMsgID, sm.SMDefaultMsgID)
 		f.Set(pdufield.DataCoding, uint8(sm.Text.Type()))
+		//set the optional parameters in the submit pdu from sm
+		optParams := p.TLVFields()
+		for _, value := range sm.OptParams {
+			err := optParams.Set(value.Tag, value.Bytes())
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		resp, err := t.do(p)
 		if err != nil {
 			return nil, err
