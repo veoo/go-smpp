@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/veoo/go-smpp/smpp/pdu"
 	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
@@ -33,8 +35,10 @@ func ExampleReceiver() {
 		Passwd:  "secret",
 		Handler: f,
 	}
-	conn := r.Bind() // make persistent connection.
+	// Create persistent connection.
+	conn := r.Bind()
 	time.AfterFunc(10*time.Second, func() { r.Close() })
+	// Print connection status (Connected, Disconnected, etc).
 	for c := range conn {
 		log.Println("SMPP connection status:", c.Status())
 	}
@@ -53,7 +57,7 @@ func ExampleTransmitter() {
 			Src:      "sender",
 			Dst:      "recipient",
 			Text:     pdutext.Latin1("Olá mundo"),
-			Register: NoDeliveryReceipt,
+			Register: pdufield.NoDeliveryReceipt,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -62,6 +66,16 @@ func ExampleTransmitter() {
 	default:
 		log.Fatal(conn.Error())
 	}
+	sm, err := tx.Submit(&ShortMessage{
+		Src:      "sender",
+		Dst:      "recipient",
+		Text:     pdutext.Latin1("Olá mundo"),
+		Register: pdufield.NoDeliveryReceipt,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Message ID:", sm.RespID())
 }
 
 func ExampleTransceiver() {
@@ -76,13 +90,16 @@ func ExampleTransceiver() {
 				src, dst, txt)
 		}
 	}
+	lm := rate.NewLimiter(rate.Limit(10), 1) // Max rate of 10/s.
 	tx := &Transceiver{
-		Addr:    "localhost:2775",
-		User:    "foobar",
-		Passwd:  "secret",
-		Handler: f,
+		Addr:        "localhost:2775",
+		User:        "foobar",
+		Passwd:      "secret",
+		Handler:     f,  // Handle incoming SM or delivery receipts.
+		RateLimiter: lm, // Optional rate limiter.
 	}
-	conn := tx.Bind() // make persistent connection.
+	// Create persistent connection.
+	conn := tx.Bind()
 	go func() {
 		for c := range conn {
 			log.Println("SMPP connection status:", c.Status())
@@ -93,7 +110,7 @@ func ExampleTransceiver() {
 			Src:      r.FormValue("src"),
 			Dst:      r.FormValue("dst"),
 			Text:     pdutext.Raw(r.FormValue("text")),
-			Register: FinalDeliveryReceipt,
+			Register: pdufield.FinalDeliveryReceipt,
 		})
 		if err == ErrNotConnected {
 			http.Error(w, "Oops.", http.StatusServiceUnavailable)

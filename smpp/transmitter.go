@@ -30,21 +30,25 @@ const MaxDestinationAddress = 254
 
 // Transmitter implements an SMPP client transmitter.
 type Transmitter struct {
-	Addr            string
-	User            string
-	Passwd          string
-	SystemType      string
-	EnquireLink     time.Duration
-	RespTimeout     time.Duration
-	TLS             *tls.Config
-	ConnInterceptor ConnMiddleware
-	WindowSize      uint
-	r               *rand.Rand
+	Addr               string        // Server address in form of host:port.
+	User               string        // Username.
+	Passwd             string        // Password.
+	SystemType         string        // System type, default empty.
+	EnquireLink        time.Duration // Enquire link interval, default 10s.
+	EnquireLinkTimeout time.Duration // Time after last EnquireLink response when connection considered down
+	RespTimeout        time.Duration // Response timeout, default 1s.
+	BindInterval       time.Duration // Binding retry interval
+	TLS                *tls.Config   // TLS client settings, optional.
+	RateLimiter        RateLimiter   // Rate limiter, optional.
+	WindowSize         uint
+	rMutex             sync.Mutex
+	r                  *rand.Rand
 
-	conn struct {
+	cl struct {
 		sync.Mutex
 		*client
 	}
+
 	tx struct {
 		count int32
 		sync.Mutex
@@ -63,25 +67,27 @@ type tx struct {
 // return ErrNotConnected.
 func (t *Transmitter) Bind() <-chan ConnStatus {
 	t.r = rand.New(rand.NewSource(time.Now().UnixNano()))
-	t.conn.Lock()
-	defer t.conn.Unlock()
-	if t.conn.client != nil {
-		return t.conn.Status
+	t.cl.Lock()
+	defer t.cl.Unlock()
+	if t.cl.client != nil {
+		return t.cl.Status
 	}
 	t.tx.Lock()
 	t.tx.inflight = make(map[uint32]chan *tx)
 	t.tx.Unlock()
 	c := &client{
-		Addr:            t.Addr,
-		TLS:             t.TLS,
-		EnquireLink:     t.EnquireLink,
-		RespTimeout:     t.RespTimeout,
-		Status:          make(chan ConnStatus, 1),
-		BindFunc:        t.bindFunc,
-		WindowSize:      t.WindowSize,
-		ConnInterceptor: t.ConnInterceptor,
+		Addr:               t.Addr,
+		TLS:                t.TLS,
+		Status:             make(chan ConnStatus, 1),
+		BindFunc:           t.bindFunc,
+		EnquireLink:        t.EnquireLink,
+		EnquireLinkTimeout: t.EnquireLinkTimeout,
+		RespTimeout:        t.RespTimeout,
+		WindowSize:         t.WindowSize,
+		RateLimiter:        t.RateLimiter,
+		BindInterval:       t.BindInterval,
 	}
-	t.conn.client = c
+	t.cl.client = c
 	c.init()
 	go c.Bind()
 	return c.Status
@@ -108,7 +114,7 @@ func (t *Transmitter) bindFunc(c Conn) error {
 // f is only set on transceiver.
 func (t *Transmitter) handlePDU(f HandlerFunc) {
 	for {
-		p, err := t.conn.Read()
+		p, err := t.cl.Read()
 		if err != nil {
 			break
 		}
@@ -123,7 +129,7 @@ func (t *Transmitter) handlePDU(f HandlerFunc) {
 		}
 		if p.Header().ID == pdu.DeliverSMID { // Send DeliverSMResp
 			pResp := pdu.NewDeliverSMRespSeq(p.Header().Seq)
-			t.conn.Write(pResp)
+			t.cl.Write(pResp)
 		}
 	}
 	t.tx.Lock()
@@ -135,12 +141,12 @@ func (t *Transmitter) handlePDU(f HandlerFunc) {
 
 // Close implements the ClientConn interface.
 func (t *Transmitter) Close() error {
-	t.conn.Lock()
-	defer t.conn.Unlock()
-	if t.conn.client == nil {
+	t.cl.Lock()
+	defer t.cl.Unlock()
+	if t.cl.client == nil {
 		return ErrNotConnected
 	}
-	return t.conn.Close()
+	return t.cl.Close()
 }
 
 // UnsucessDest contains information about unsuccessful delivery to an address
@@ -162,17 +168,6 @@ func newUnsucessDest(p pdufield.UnSme) UnsucessDest {
 	return unDest
 }
 
-// DeliverySetting is used to configure registered delivery
-// for short messages.
-type DeliverySetting uint8
-
-// Supported delivery settings.
-const (
-	NoDeliveryReceipt      DeliverySetting = 0x00
-	FinalDeliveryReceipt   DeliverySetting = 0x01
-	FailureDeliveryReceipt DeliverySetting = 0x02
-)
-
 // ShortMessage configures a short message that can be submitted via
 // the Transmitter. When returned from Submit, the ShortMessage
 // provides Resp and RespID.
@@ -183,7 +178,7 @@ type ShortMessage struct {
 	DLs       []string //List if destribution list for submit multi
 	Text      pdutext.Codec
 	Validity  time.Duration
-	Register  DeliverySetting
+	Register  pdufield.DeliverySetting
 	OptParams pdufield.TLVMap
 
 	// Other fields, normally optional.
@@ -275,16 +270,16 @@ func (sm *ShortMessage) UnsuccessSmes() ([]UnsucessDest, error) {
 }
 
 func (t *Transmitter) do(p pdu.Body) (*tx, error) {
-	t.conn.Lock()
-	notbound := t.conn.client == nil
-	t.conn.Unlock()
+	t.cl.Lock()
+	notbound := t.cl.client == nil
+	t.cl.Unlock()
 	if notbound {
 		return nil, ErrNotBound
 	}
-	if t.conn.WindowSize > 0 {
+	if t.cl.WindowSize > 0 {
 		inflight := uint(atomic.AddInt32(&t.tx.count, 1))
 		defer func(t *Transmitter) { atomic.AddInt32(&t.tx.count, -1) }(t)
-		if inflight > t.conn.WindowSize {
+		if inflight > t.cl.WindowSize {
 			return nil, ErrMaxWindowSize
 		}
 	}
@@ -294,19 +289,21 @@ func (t *Transmitter) do(p pdu.Body) (*tx, error) {
 	t.tx.inflight[seq] = rc
 	t.tx.Unlock()
 	defer func() {
-		close(rc)
 		t.tx.Lock()
 		delete(t.tx.inflight, seq)
 		t.tx.Unlock()
 	}()
-	err := t.conn.Write(p)
+	err := t.cl.Write(p)
 	if err != nil {
 		return nil, err
 	}
 	select {
 	case resp := <-rc:
+		if resp.Err != nil {
+			return nil, resp.Err
+		}
 		return resp, nil
-	case <-t.conn.respTimeout():
+	case <-t.cl.respTimeout():
 		return nil, errors.New("timeout waiting for response")
 	}
 }
@@ -343,7 +340,7 @@ func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) ([]ShortMessage, error) {
 	UDHHeader[4] = uint8(countParts)
 	responses := []ShortMessage{}
 	for i := 0; i < countParts; i++ {
-		UDHHeader[5] = uint8(i + 1)
+		UDHHeader[5] = uint8(i + 1) // current message part
 		p := pdu.NewSubmitSM()
 		f := p.Fields()
 		f.Set(pdufield.SourceAddr, sm.Src)
@@ -511,12 +508,15 @@ type QueryResp struct {
 }
 
 // QuerySM queries the delivery status of a message. It requires the
-// source address (sender) and message ID.
-func (t *Transmitter) QuerySM(src, msgid string) (*QueryResp, error) {
+// source address (sender) with TON and NPI and message ID.
+func (t *Transmitter) QuerySM(src, msgid string, srcTON, srcNPI uint8) (*QueryResp, error) {
 	p := pdu.NewQuerySM()
 	f := p.Fields()
 	f.Set(pdufield.SourceAddr, src)
+	f.Set(pdufield.SourceAddrTON, srcTON)
+	f.Set(pdufield.SourceAddrNPI, srcNPI)
 	f.Set(pdufield.MessageID, msgid)
+
 	resp, err := t.do(p)
 	if err != nil {
 		return nil, err
@@ -535,7 +535,7 @@ func (t *Transmitter) QuerySM(src, msgid string) (*QueryResp, error) {
 	qr := &QueryResp{MsgID: msgid}
 	switch ms.Bytes()[0] {
 	case 0:
-		qr.MsgState = "DELIVERED"
+		qr.MsgState = "SCHEDULED"
 	case 1:
 		qr.MsgState = "ENROUTE"
 	case 2:
