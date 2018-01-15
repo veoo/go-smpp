@@ -223,7 +223,7 @@ func (srv *server) handle(c *conn) {
 		}
 		h, ok := srv.m[p.Header().ID]
 		if ok {
-			h(s, p)
+			go h(s, p)
 		} else {
 			log.Println("Handler not found for:", p.Header().ID)
 		}
