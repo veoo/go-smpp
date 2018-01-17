@@ -115,10 +115,11 @@ func (t *Transmitter) handlePDU(f HandlerFunc) {
 		seq := p.Header().Seq
 		t.tx.Lock()
 		rc := t.tx.inflight[seq]
-		t.tx.Unlock()
 		if rc != nil {
 			rc <- &tx{PDU: p}
+			t.tx.Unlock()
 		} else if f != nil {
+			t.tx.Unlock()
 			f(p)
 		}
 		if p.Header().ID == pdu.DeliverSMID { // Send DeliverSMResp
@@ -425,6 +426,9 @@ func (t *Transmitter) submitMsg(sm *ShortMessage, p pdu.Body, dataCoding uint8) 
 	resp, err := t.do(p)
 	if err != nil {
 		return nil, err
+	}
+	if resp.PDU == nil {
+		return sm, fmt.Errorf("empty response PDU")
 	}
 	sm.resp.Lock()
 	sm.resp.p = resp.PDU
