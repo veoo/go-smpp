@@ -6,6 +6,7 @@ package smpp
 
 import (
 	"crypto/tls"
+	"golang.org/x/net/context"
 	"io"
 	"math"
 	"sync"
@@ -71,30 +72,57 @@ type ClientConn interface {
 // effect the internal work of the SMPP server itself.
 type ConnMiddleware func(conn Conn) Conn
 
+// RateLimiter defines an interface for pacing the sending
+// of short messages to a client connection.
+//
+// The Transmitter or Transceiver using the RateLimiter holds a
+// single context.Context per client connection, passed to Wait
+// prior to sending short messages.
+//
+// Suitable for use with package golang.org/x/time/rate.
+type RateLimiter interface {
+	// Wait blocks until the limiter permits an event to happen.
+	Wait(ctx context.Context) error
+}
+
 // client provides a persistent client connection.
 type client struct {
-	Addr            string
-	TLS             *tls.Config
-	Status          chan ConnStatus
-	BindFunc        func(c Conn) error
-	EnquireLink     time.Duration
-	RespTimeout     time.Duration
-	WindowSize      uint
-	ConnInterceptor ConnMiddleware
+	Addr               string
+	TLS                *tls.Config
+	Status             chan ConnStatus
+	BindFunc           func(c Conn) error
+	EnquireLink        time.Duration
+	EnquireLinkTimeout time.Duration
+	RespTimeout        time.Duration
+	BindInterval       time.Duration
+	WindowSize         uint
+	ConnInterceptor    ConnMiddleware
+	RateLimiter        RateLimiter
 
 	// internal stuff.
 	inbox chan pdu.Body
 	conn  *connSwitch
 	stop  chan struct{}
 	once  sync.Once
+	lmctx context.Context
+	// time of the last received EnquireLinkResp
+	eliTime time.Time
+	eliMtx  sync.RWMutex
 }
 
 func (c *client) init() {
 	c.inbox = make(chan pdu.Body)
 	c.conn = &connSwitch{}
 	c.stop = make(chan struct{})
+	if c.RateLimiter != nil {
+		c.lmctx = context.Background()
+	}
 	if c.EnquireLink < 10*time.Second {
 		c.EnquireLink = 10 * time.Second
+	}
+
+	if c.EnquireLinkTimeout == 0 {
+		c.EnquireLinkTimeout = 3 * c.EnquireLink
 	}
 }
 
@@ -142,7 +170,7 @@ func (c *client) Bind() {
 					break
 				}
 			case pdu.EnquireLinkRespID:
-				// TODO: don't just ignore
+				c.updateEliTime()
 			default:
 				c.inbox <- p
 			}
@@ -150,16 +178,32 @@ func (c *client) Bind() {
 	retry:
 		close(eli)
 		c.conn.Close()
-		delay = math.Min(delay*math.E, maxdelay)
-		c.trysleep(time.Duration(delay) * time.Second)
+		delayDuration := c.BindInterval
+		if delayDuration == 0 {
+			delay = math.Min(delay*math.E, maxdelay)
+			delayDuration = time.Duration(delay) * time.Second
+		}
+		c.trysleep(delayDuration)
 	}
 	close(c.Status)
 }
 
 func (c *client) enquireLink(stop chan struct{}) {
+	// for the first check set time as Now()
+	c.updateEliTime()
 	for {
 		select {
 		case <-time.After(c.EnquireLink):
+			// check the time of the last received EnquireLinkResp
+			c.eliMtx.RLock()
+			if time.Since(c.eliTime) >= c.EnquireLinkTimeout {
+				c.conn.Write(pdu.NewUnbind())
+				c.conn.Close()
+				c.eliMtx.RUnlock()
+				return
+			}
+			c.eliMtx.RUnlock()
+			// send the EnquireLink
 			err := c.conn.Write(pdu.NewEnquireLink())
 			if err != nil {
 				return
@@ -170,6 +214,12 @@ func (c *client) enquireLink(stop chan struct{}) {
 			return
 		}
 	}
+}
+
+func (c *client) updateEliTime() {
+	c.eliMtx.Lock()
+	c.eliTime = time.Now()
+	c.eliMtx.Unlock()
 }
 
 func (c *client) notify(ev ConnStatus) {
@@ -191,6 +241,9 @@ func (c *client) Read() (pdu.Body, error) {
 
 // Write serializes the given PDU and writes to the connection.
 func (c *client) Write(w pdu.Body) error {
+	if c.RateLimiter != nil {
+		c.RateLimiter.Wait(c.lmctx)
+	}
 	return c.conn.Write(w)
 }
 

@@ -6,7 +6,6 @@ package pdufield
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"io"
 )
@@ -20,8 +19,11 @@ type List []Name
 // we attempt to decode text automatically. See pdutext package
 // for more information.
 func (l List) Decode(r *bytes.Buffer) (Map, error) {
-	var unsuccessCount int
-	var numDest int
+	var (
+		unsuccessCount, numDest, udhLength, smLength int
+
+		udhiFlag bool
+	)
 	f := make(Map)
 loop:
 	for _, k := range l {
@@ -64,7 +66,8 @@ loop:
 			ReplaceIfPresentFlag,
 			SMDefaultMsgID,
 			SourceAddrNPI,
-			SourceAddrTON:
+			SourceAddrTON,
+			SMLength:
 			b, err := r.ReadByte()
 			if err == io.EOF {
 				break loop
@@ -73,11 +76,66 @@ loop:
 				return nil, err
 			}
 			f[k] = &Fixed{Data: b}
-			if k == NoUnsuccess {
+			switch k {
+			case NoUnsuccess:
 				unsuccessCount = int(b)
-			} else if k == NumberDests {
+			case NumberDests:
 				numDest = int(b)
+			case SMLength:
+				smLength = int(b)
+			case ESMClass:
+				mask := byte(1 << 6)
+				udhiFlag = mask == b&mask
 			}
+		case UDHLength:
+			if !udhiFlag {
+				continue
+			}
+			b, err := r.ReadByte()
+			if err == io.EOF {
+				break loop
+			}
+			if err != nil {
+				return nil, err
+			}
+			udhLength = int(b)
+			f[k] = &Fixed{Data: b}
+		case GSMUserData:
+			if !udhiFlag {
+				continue
+			}
+			var udhList []UDH
+			var l int
+			for i := udhLength; i > 0; i -= l + 2 {
+				var udh UDH
+				// Read IEI
+				b, err := r.ReadByte()
+				if err == io.EOF {
+					break loop
+				}
+				if err != nil {
+					return nil, err
+				}
+				udh.IEI = Fixed{Data: b}
+				// Read IELength
+				b, err = r.ReadByte()
+				if err == io.EOF {
+					break loop
+				}
+				if err != nil {
+					return nil, err
+				}
+				l = int(b)
+				udh.IELength = Fixed{Data: b}
+				// Read IEData
+				bt := r.Next(l)
+				udh.IEData = Variable{Data: bt}
+				udhList = append(udhList, udh)
+				if len(bt) != l {
+					break loop
+				}
+			}
+			f[k] = &UDHList{Data: udhList}
 		case DestinationList:
 			var destList []DestSme
 			for i := 0; i < numDest; i++ {
@@ -158,43 +216,23 @@ loop:
 				unsList = append(unsList, uns)
 			}
 			f[k] = &UnSmeList{Data: unsList}
-		case SMLength:
-			b, err := r.ReadByte()
-			if err == io.EOF {
-				break loop
+		case ShortMessage:
+			// Check UDHLength
+			if udhLength > 0 {
+				if smLength-udhLength-1 < 0 {
+					return nil, fmt.Errorf("smLength is lesser than udhLength+1: have %d and %d",
+						smLength, udhLength)
+				}
+				smLength -= udhLength + 1
+				f[SMLength] = &Fixed{Data: byte(smLength)}
 			}
-			if err != nil {
-				return nil, err
-			}
-			l := int(b)
-			f[k] = &Fixed{Data: b}
-			if r.Len() < l {
+			// Check SMLength
+			if r.Len() < smLength {
 				return nil, fmt.Errorf("short read for smlength: want %d, have %d",
-					l, r.Len())
+					smLength, r.Len())
 			}
-			f[ShortMessage] = &SM{Data: r.Next(l)}
+			f[ShortMessage] = &SM{Data: r.Next(smLength)}
 		}
 	}
 	return f, nil
-}
-
-// DecodeTLV scans the given byte slice to build a TLVMap from binary data.
-func (l List) DecodeTLV(r *bytes.Buffer) (TLVMap, error) {
-	t := make(TLVMap)
-	for r.Len() >= 4 {
-		b := r.Next(4)
-		ft := TLVType(binary.BigEndian.Uint16(b[0:2]))
-		fl := binary.BigEndian.Uint16(b[2:4])
-		if r.Len() < int(fl) {
-			return nil, fmt.Errorf("not enough data for tag %#x: want %d, have %d",
-				ft, fl, r.Len())
-		}
-		b = r.Next(int(fl))
-		t[ft] = &TLVBody{
-			Tag:  ft,
-			Len:  fl,
-			data: b,
-		}
-	}
-	return t, nil
 }

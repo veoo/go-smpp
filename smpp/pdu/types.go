@@ -4,7 +4,9 @@
 
 package pdu
 
-import "github.com/veoo/go-smpp/smpp/pdu/pdufield"
+import (
+	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
+)
 
 // PDU Types.
 const (
@@ -341,6 +343,8 @@ func newDeliverSM(hdr *Header) *Codec {
 			pdufield.DataCoding,
 			pdufield.SMDefaultMsgID,
 			pdufield.SMLength,
+			pdufield.UDHLength,
+			pdufield.GSMUserData,
 			pdufield.ShortMessage,
 		},
 	}

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
+	"github.com/veoo/go-smpp/smpp/pdu/pdutlv"
 )
 
 var nextSeq uint32
@@ -22,7 +23,7 @@ type Codec struct {
 	h *Header
 	l pdufield.List
 	f pdufield.Map
-	t pdufield.TLVMap
+	t pdutlv.Map
 }
 
 // init initializes the Codec's list and maps and sets the header
@@ -32,14 +33,14 @@ func (pdu *Codec) init() {
 		pdu.l = pdufield.List{}
 	}
 	pdu.f = make(pdufield.Map)
-	pdu.t = make(pdufield.TLVMap)
+	pdu.t = make(pdutlv.Map)
 	if pdu.h.Seq == 0 { // If Seq not set
 		pdu.h.Seq = atomic.AddUint32(&nextSeq, 1)
 	}
 }
 
-// setup replaces the Codec's current maps with the given ones.
-func (pdu *Codec) setup(f pdufield.Map, t pdufield.TLVMap) {
+// setup replaces the codec's current maps with the given ones.
+func (pdu *Codec) setup(f pdufield.Map, t pdutlv.Map) {
 	pdu.f, pdu.t = f, t
 }
 
@@ -55,8 +56,7 @@ func (pdu *Codec) Len() int {
 		l += f.Len()
 	}
 	for _, t := range pdu.t {
-		// +2 bytes for tag, +2 bytes for length (see spec, p.42)
-		l += int(t.Len + 4)
+		l += t.Len()
 	}
 	return l
 }
@@ -71,8 +71,8 @@ func (pdu *Codec) Fields() pdufield.Map {
 	return pdu.f
 }
 
-// TLVFields implement the PDU interface.
-func (pdu *Codec) TLVFields() pdufield.TLVMap {
+// Fields implement the PDU interface.
+func (pdu *Codec) TLVFields() pdutlv.Map {
 	return pdu.t
 }
 
@@ -89,12 +89,11 @@ func (pdu *Codec) SerializeTo(w io.Writer) error {
 			return err
 		}
 	}
-	for _, v := range pdu.TLVFields() {
-		if err := v.SerializeTo(&b); err != nil {
+	for _, f := range pdu.TLVFields() {
+		if err := f.SerializeTo(&b); err != nil {
 			return err
 		}
 	}
-
 	pdu.h.Len = uint32(pdu.Len())
 	err := pdu.h.SerializeTo(w)
 	if err != nil {
@@ -105,10 +104,10 @@ func (pdu *Codec) SerializeTo(w io.Writer) error {
 }
 
 type CodecJSON struct {
-	Header    *Header         `json:"header"`
-	FieldList pdufield.List   `json:"fieldList"`
-	Fields    pdufield.Map    `json:"fields"`
-	TLVFields pdufield.TLVMap `json:"tlvFields"`
+	Header    *Header       `json:"header"`
+	FieldList pdufield.List `json:"fieldList"`
+	Fields    pdufield.Map  `json:"fields"`
+	TLVFields pdutlv.Map    `json:"tlvFields"`
 }
 
 func (c *Codec) MarshalJSON() ([]byte, error) {
@@ -141,7 +140,7 @@ func (c *Codec) UnmarshalJSON(b []byte) error {
 // used for initializing new PDUs with map data decoded off the wire.
 type decoder interface {
 	Body
-	setup(f pdufield.Map, t pdufield.TLVMap)
+	setup(f pdufield.Map, t pdutlv.Map)
 }
 
 func decodeFields(pdu decoder, b []byte) (Body, error) {
@@ -151,7 +150,7 @@ func decodeFields(pdu decoder, b []byte) (Body, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := l.DecodeTLV(r)
+	t, err := pdutlv.DecodeTLV(r)
 	if err != nil {
 		return nil, err
 	}
