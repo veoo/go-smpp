@@ -40,6 +40,8 @@ func (m Map) Set(t Tag, v interface{}) error {
 		m[t] = NewTLV(t, []byte(v.([]byte)))
 	case Body:
 		m[t] = v.(Body)
+	case MessageStateType:
+		m[t] = NewTLV(MessageStateOption, []byte{uint8(v.(MessageStateType))})
 	default:
 		return fmt.Errorf("unsupported Tag-Length-Value field data: %#v", v)
 	}
