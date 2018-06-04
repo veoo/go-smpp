@@ -16,17 +16,17 @@ func TestMapSet(t *testing.T) {
 		v  interface{}
 		ok bool
 	}{
-		{TagDestAddrSubunit, nil, true},
-		{TagDestAddrSubunit, "hello", true},
-		{TagDestAddrSubunit, []byte("hello"), true},
-		{TagDestBearerType, nil, true},
-		{TagDestBearerType, uint8(1), true},
-		{TagDestBearerType, int(1), true},
-		{TagDestBearerType, t, false},
-		{TagDestBearerType, String("hello"), true},
-		{TagDestBearerType, CString("hello\x00"), true},
-		{TagDestBearerType, CString("hello"), true},
-		{TagDestBearerType, NewTLV(TagDestBearerType, []byte{0x03}), true},
+		{DestAddrSubunit, nil, true},
+		{DestAddrSubunit, "hello", true},
+		{DestAddrSubunit, []byte("hello"), true},
+		{DestBearerType, nil, true},
+		{DestBearerType, uint8(1), true},
+		{DestBearerType, int(1), true},
+		{DestBearerType, t, false},
+		{DestBearerType, String("hello"), true},
+		{DestBearerType, CString("hello\x00"), true},
+		{DestBearerType, CString("hello"), true},
+		{DestBearerType, NewTLV(DestBearerType, []byte{0x03}), true},
 	}
 	for _, el := range test {
 		if err := m.Set(el.k, el.v); el.ok && err != nil {

@@ -1,12 +1,12 @@
 package pdutlv
 
 import (
-	"testing"
 	"bytes"
+	"testing"
 )
 
 func TestDecodeTLV(t *testing.T) {
-	f := NewTLV(TagDestAddrSubunit, []byte("hello"))
+	f := NewTLV(DestAddrSubunit, []byte("hello"))
 	var b bytes.Buffer
 	if err := f.SerializeTo(&b); err != nil {
 		t.Fatalf("serialization failed: %s", err)
@@ -15,9 +15,9 @@ func TestDecodeTLV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, ok := m[TagDestAddrSubunit]
+	f, ok := m[DestAddrSubunit]
 	if !ok {
-		t.Fatalf("missing %q key: %#v", TagDestAddrSubunit.Hex(), m)
+		t.Fatalf("missing %q key: %#v", DestAddrSubunit.Hex(), m)
 	}
 	v, ok := f.(*Field)
 	if !ok {
@@ -31,7 +31,7 @@ func TestDecodeTLV(t *testing.T) {
 
 func TestDecodeTLV_Error(t *testing.T) {
 	want := []byte("hello")
-	b := bytes.NewBuffer([]byte{ 0x00, 0x05, 0x00, 0x08 })
+	b := bytes.NewBuffer([]byte{0x00, 0x05, 0x00, 0x08})
 	b.Write(want)
 
 	m, err := DecodeTLV(b)
