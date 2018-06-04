@@ -18,6 +18,7 @@ import (
 	"github.com/veoo/go-smpp/smpp/pdu"
 	"github.com/veoo/go-smpp/smpp/pdu/pdufield"
 	"github.com/veoo/go-smpp/smpp/pdu/pdutext"
+	"github.com/veoo/go-smpp/smpp/pdu/pdutlv"
 )
 
 // ErrMaxWindowSize is returned when an operation (such as Submit) violates
@@ -172,16 +173,16 @@ func newUnsucessDest(p pdufield.UnSme) UnsucessDest {
 // the Transmitter. When returned from Submit, the ShortMessage
 // provides Resp and RespID.
 type ShortMessage struct {
-	Src       string
-	Dst       string
-	DstList   []string // List of destination addreses for submit multi
-	DLs       []string //List if destribution list for submit multi
-	Text      pdutext.Codec
-	Validity  time.Duration
-	Register  pdufield.DeliverySetting
-	OptParams pdufield.TLVMap
+	Src      string
+	Dst      string
+	DstList  []string // List of destination addreses for submit multi
+	DLs      []string //List if destribution list for submit multi
+	Text     pdutext.Codec
+	Validity time.Duration
+	Register pdufield.DeliverySetting
 
 	// Other fields, normally optional.
+	TLVFields            pdutlv.Fields
 	ServiceType          string
 	SourceAddrTON        uint8
 	SourceAddrNPI        uint8
@@ -304,7 +305,7 @@ func (t *Transmitter) do(p pdu.Body) (*tx, error) {
 		}
 		return resp, nil
 	case <-t.cl.respTimeout():
-		return nil, errors.New("timeout waiting for response")
+		return nil, ErrTimeout
 	}
 }
 
@@ -368,8 +369,8 @@ func (t *Transmitter) SubmitLongMsg(sm *ShortMessage) ([]ShortMessage, error) {
 		f.Set(pdufield.DataCoding, uint8(sm.Text.Type()))
 		//set the optional parameters in the submit pdu from sm
 		optParams := p.TLVFields()
-		for _, value := range sm.OptParams {
-			err := optParams.Set(value.Tag, value.Bytes())
+		for tag, value := range sm.TLVFields {
+			err := optParams.Set(tag, value)
 			if err != nil {
 				return nil, err
 			}
@@ -412,8 +413,8 @@ func (t *Transmitter) submitMsg(sm *ShortMessage, p pdu.Body, dataCoding uint8) 
 	f.Set(pdufield.DataCoding, dataCoding)
 	//set the optional parameters in the submit pdu from sm
 	optParams := p.TLVFields()
-	for _, value := range sm.OptParams {
-		err := optParams.Set(value.Tag, value.Bytes())
+	for tag, value := range sm.TLVFields {
+		err := optParams.Set(tag, value)
 		if err != nil {
 			return nil, err
 		}
@@ -426,6 +427,9 @@ func (t *Transmitter) submitMsg(sm *ShortMessage, p pdu.Body, dataCoding uint8) 
 	sm.resp.Lock()
 	sm.resp.p = resp.PDU
 	sm.resp.Unlock()
+	if resp.PDU == nil {
+		return nil, fmt.Errorf("unexpected empty PDU")
+	}
 	if id := resp.PDU.Header().ID; id != pdu.SubmitSMRespID {
 		return sm, fmt.Errorf("unexpected PDU ID: %s", id)
 	}
@@ -490,6 +494,9 @@ func (t *Transmitter) submitMsgMulti(sm *ShortMessage, p pdu.Body, dataCoding ui
 	sm.resp.Lock()
 	sm.resp.p = resp.PDU
 	sm.resp.Unlock()
+	if resp.PDU == nil {
+		return nil, fmt.Errorf("unexpected empty PDU")
+	}
 	if id := resp.PDU.Header().ID; id != pdu.SubmitMultiRespID {
 		return sm, fmt.Errorf("unexpected PDU ID: %s", id)
 	}
