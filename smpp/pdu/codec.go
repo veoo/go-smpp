@@ -82,6 +82,10 @@ func (pdu *Codec) SerializeTo(w io.Writer) error {
 	for _, k := range pdu.FieldList() {
 		f, ok := pdu.f[k]
 		if !ok {
+			// HACK: Skipping serialisation of UDH if it's not found in PDU
+			if k == "gsm_sms_ud.udh.len" || k == "gsm_sms_ud.udh" {
+				continue
+			}
 			pdu.f.Set(k, nil)
 			f = pdu.f[k]
 		}
